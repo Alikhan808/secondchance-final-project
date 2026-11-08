@@ -1,0 +1,70 @@
+name: SecondChance API evidence
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      mongodb:
+        image: mongo:7
+        ports: ['27017:27017']
+    env:
+      MONGO_URL: mongodb://127.0.0.1:27017
+      MONGO_DB: secondChance
+      MONGO_COLLECTION: secondChanceItems
+      JWT_SECRET: secondchance-disposable-ci-test-key
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install backend dependencies
+        working-directory: secondChance-backend
+        run: npm ci --no-audit --no-fund
+      - name: Check JavaScript syntax
+        run: find secondChance-backend/routes secondChance-backend/models -name '*.js' -exec node --check {} \;
+      - name: Import sixteen documents and start backend
+        working-directory: secondChance-backend
+        run: |
+          mkdir -p ../submission
+          node app.js > ../submission/server.log 2>&1 &
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://localhost:3060/api/secondchance/items > /tmp/items.json && node -e 'if(JSON.parse(require("fs").readFileSync("/tmp/items.json")).length!==16)process.exit(1)'; then break; fi
+            sleep 2
+          done
+          node -e 'const a=JSON.parse(require("fs").readFileSync("/tmp/items.json"));if(a.length!==16)process.exit(1);console.log("Imported documents:",a.length)' | tee ../submission/inserted_items
+          cat ../submission/server.log >> ../submission/inserted_items
+      - name: Capture all items
+        run: |
+          echo 'curl -i http://localhost:3060/api/secondchance/items' > submission/mainpage
+          curl -fsS -i http://localhost:3060/api/secondchance/items >> submission/mainpage
+          cat submission/mainpage
+      - name: Register test user
+        run: |
+          echo "curl -i -X POST http://localhost:3060/api/auth/register -H 'Content-Type: application/json' -d '{\"email\":\"secondchance-ci@example.com\",\"password\":\"DemoPass123!\",\"firstName\":\"Demo\",\"lastName\":\"User\"}'" > submission/register
+          curl -fsS -i -X POST http://localhost:3060/api/auth/register -H 'Content-Type: application/json' -d '{"email":"secondchance-ci@example.com","password":"DemoPass123!","firstName":"Demo","lastName":"User"}' >> submission/register
+          cat submission/register
+      - name: Login test user
+        run: |
+          echo "curl -i -X POST http://localhost:3060/api/auth/login -H 'Content-Type: application/json' -d '{\"email\":\"secondchance-ci@example.com\",\"password\":\"DemoPass123!\"}'" > submission/login
+          curl -fsS -i -X POST http://localhost:3060/api/auth/login -H 'Content-Type: application/json' -d '{"email":"secondchance-ci@example.com","password":"DemoPass123!"}' >> submission/login
+          cat submission/login
+      - name: Get item details
+        run: |
+          echo 'curl -i http://localhost:3060/api/secondchance/items/875' > submission/item_detail
+          curl -fsS -i http://localhost:3060/api/secondchance/items/875 >> submission/item_detail
+          cat submission/item_detail
+      - name: Search items by category
+        run: |
+          echo 'curl -i "http://localhost:3060/api/secondchance/search?category=Kitchen"' > submission/search_item
+          curl -fsS -i 'http://localhost:3060/api/secondchance/search?category=Kitchen' >> submission/search_item
+          cat submission/search_item
+      - name: Upload actual API evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: secondchance-submission-evidence
+          path: submission/
